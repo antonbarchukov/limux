@@ -29,6 +29,7 @@ static GHOSTTY: OnceLock<GhosttyState> = OnceLock::new();
 /// Per-surface state, stored in a global registry keyed by surface pointer.
 struct SurfaceEntry {
     gl_area: gtk::GLArea,
+    toast_overlay: gtk::Overlay,
     on_title_changed: Option<Box<dyn Fn(&str)>>,
     on_bell: Option<Box<dyn Fn()>>,
     on_close: Option<Box<dyn Fn()>>,
@@ -166,12 +167,30 @@ unsafe extern "C" fn ghostty_action_cb(
     }
 }
 
+/// Find the first surface pointer from the surface map.
+/// Used by clipboard callbacks that receive null userdata.
+fn find_any_surface() -> Option<ghostty_surface_t> {
+    SURFACE_MAP.with(|map| {
+        map.borrow().keys().next().map(|&k| k as ghostty_surface_t)
+    })
+}
+
 unsafe extern "C" fn ghostty_read_clipboard_cb(
     userdata: *mut c_void,
     clipboard_type: c_int,
     state: *mut c_void,
 ) {
-    let surface_key = userdata as usize;
+    // userdata may be null if surface config userdata wasn't set.
+    // Fall back to finding the surface from our map.
+    let surface_ptr = if !userdata.is_null() {
+        userdata as ghostty_surface_t
+    } else {
+        match find_any_surface() {
+            Some(s) => s,
+            None => return,
+        }
+    };
+
     let display = match gtk::gdk::Display::default() {
         Some(d) => d,
         None => return,
@@ -183,17 +202,22 @@ unsafe extern "C" fn ghostty_read_clipboard_cb(
     };
 
     clipboard.read_text_async(gtk::gio::Cancellable::NONE, move |result| {
-        let text = result.ok().flatten().map(|s| s.to_string());
-        if let Some(text) = text {
-            if let Ok(cstr) = CString::new(text) {
-                unsafe {
-                    ghostty_surface_complete_clipboard_request(
-                        surface_key as ghostty_surface_t,
-                        cstr.as_ptr(),
-                        state,
-                        true,
-                    );
-                }
+        // Get clipboard text, defaulting to empty string on failure
+        let text = result
+            .ok()
+            .flatten()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        // Replace interior null bytes so CString doesn't fail
+        let clean = text.replace('\0', "");
+        if let Ok(cstr) = CString::new(clean) {
+            unsafe {
+                ghostty_surface_complete_clipboard_request(
+                    surface_ptr,
+                    cstr.as_ptr(),
+                    state,
+                    true,
+                );
             }
         }
     });
@@ -205,10 +229,17 @@ unsafe extern "C" fn ghostty_confirm_read_clipboard_cb(
     state: *mut c_void,
     _request_type: c_int,
 ) {
-    let surface_key = userdata as usize;
+    let surface_ptr = if !userdata.is_null() {
+        userdata as ghostty_surface_t
+    } else {
+        match find_any_surface() {
+            Some(s) => s,
+            None => return,
+        }
+    };
     unsafe {
         ghostty_surface_complete_clipboard_request(
-            surface_key as ghostty_surface_t,
+            surface_ptr,
             text,
             state,
             true,
@@ -217,7 +248,7 @@ unsafe extern "C" fn ghostty_confirm_read_clipboard_cb(
 }
 
 unsafe extern "C" fn ghostty_write_clipboard_cb(
-    _userdata: *mut c_void,
+    userdata: *mut c_void,
     clipboard_type: c_int,
     contents: *const ghostty_clipboard_content_s,
     count: usize,
@@ -240,12 +271,36 @@ unsafe extern "C" fn ghostty_write_clipboard_cb(
         Some(d) => d,
         None => return,
     };
+
+    // Write to the requested clipboard
     let clipboard = if clipboard_type == GHOSTTY_CLIPBOARD_SELECTION {
         display.primary_clipboard()
     } else {
         display.clipboard()
     };
     clipboard.set_text(&text);
+
+    // Also set the other clipboard for convenience
+    if clipboard_type == GHOSTTY_CLIPBOARD_SELECTION {
+        display.clipboard().set_text(&text);
+    } else {
+        display.primary_clipboard().set_text(&text);
+    }
+
+    // Show "Copied to clipboard" toast on the surface's overlay
+    let surface_key = if !userdata.is_null() {
+        userdata as usize
+    } else {
+        match find_any_surface() {
+            Some(s) => s as usize,
+            None => return,
+        }
+    };
+    SURFACE_MAP.with(|map| {
+        if let Some(entry) = map.borrow().get(&surface_key) {
+            show_clipboard_toast(&entry.toast_overlay);
+        }
+    });
 }
 
 unsafe extern "C" fn ghostty_close_surface_cb(userdata: *mut c_void, _process_alive: bool) {
@@ -271,11 +326,12 @@ pub struct TerminalCallbacks {
     pub on_close: Box<dyn Fn()>,
 }
 
-/// Create a new Ghostty-powered terminal widget (GLArea).
+/// Create a new Ghostty-powered terminal widget.
+/// Returns an Overlay (GLArea + toast layer) for embedding in the pane.
 pub fn create_terminal(
     working_directory: Option<&str>,
     callbacks: TerminalCallbacks,
-) -> gtk::GLArea {
+) -> gtk::Overlay {
     let gl_area = gtk::GLArea::new();
     gl_area.set_hexpand(true);
     gl_area.set_vexpand(true);
@@ -291,9 +347,16 @@ pub fn create_terminal(
     let surface_cell: Rc<RefCell<Option<ghostty_surface_t>>> = Rc::new(RefCell::new(None));
     let had_focus = Rc::new(Cell::new(false));
 
+    // Create overlay early so closures can capture it for toast notifications
+    let overlay = gtk::Overlay::new();
+    overlay.set_child(Some(&gl_area));
+    overlay.set_hexpand(true);
+    overlay.set_vexpand(true);
+
     // On realize: create the Ghostty surface
     {
         let gl = gl_area.clone();
+        let overlay_for_map = overlay.clone();
         let surface_cell = surface_cell.clone();
         let callbacks = callbacks.clone();
         let had_focus = had_focus.clone();
@@ -303,6 +366,16 @@ pub fn create_terminal(
                 eprintln!("cmux: GLArea error after make_current: {err}");
                 return;
             }
+
+            // If the surface already exists (reparenting from a split),
+            // reinitialize the GL renderer with the new GL context while
+            // preserving the terminal/pty state.
+            if let Some(surface) = *surface_cell.borrow() {
+                unsafe { ghostty_surface_display_realized(surface) };
+                gl_area.queue_render();
+                return;
+            }
+
             let app = ghostty_app();
             let mut config = unsafe { ghostty_surface_config_new() };
             config.platform_tag = GHOSTTY_PLATFORM_LINUX;
@@ -345,6 +418,7 @@ pub fn create_terminal(
                     surface_key,
                     SurfaceEntry {
                         gl_area: gl.clone(),
+                        toast_overlay: overlay_for_map.clone(),
                         on_title_changed: Some(Box::new({
                             let cb = callbacks.clone();
                             move |title| (cb.on_title_changed)(title)
@@ -419,45 +493,22 @@ pub fn create_terminal(
 
     // Keyboard input
     //
-    // Ghostty expects two things for text input:
-    // 1. ghostty_surface_key() with the hardware keycode (for keybindings)
-    // 2. ghostty_surface_text() with the UTF-8 text (for actual character input)
-    //
-    // We use an IMMulticontext for proper text composition and send the
-    // composed text via ghostty_surface_text(). The key event is sent for
-    // keybinding processing.
+    // Send key events with the text field populated. Ghostty uses the
+    // text field for actual character input and the keycode for bindings.
+    // Do NOT use ghostty_surface_text() for regular typing — Ghostty
+    // treats that as a paste, causing "pasting..." indicators in apps.
     {
-        let im_context = gtk::IMMulticontext::new();
-
-        // When the IM produces committed text, send it to Ghostty
-        {
-            let sc = surface_cell.clone();
-            im_context.connect_commit(move |_im, text| {
-                if let Some(surface) = *sc.borrow() {
-                    let bytes = text.as_bytes();
-                    unsafe {
-                        ghostty_surface_text(
-                            surface,
-                            bytes.as_ptr() as *const c_char,
-                            bytes.len(),
-                        );
-                    }
-                }
-            });
-        }
-
         let sc_press = surface_cell.clone();
         let sc_release = surface_cell.clone();
-        let im_for_press = im_context.clone();
         let key_controller = gtk::EventControllerKey::new();
-        key_controller.set_im_context(Some(&im_context));
         key_controller.connect_key_pressed(move |_ctrl, keyval, keycode, modifier| {
             if let Some(surface) = *sc_press.borrow() {
-                // Build the text string for this keypress
                 let text_char = keyval.to_unicode();
                 let mut text_buf = [0u8; 4];
-                let text_str = text_char.map(|c| c.encode_utf8(&mut text_buf) as &str);
-                let c_text = text_str.and_then(|s| CString::new(s).ok());
+                let c_text = text_char
+                    .filter(|c| !c.is_control())
+                    .map(|c| c.encode_utf8(&mut text_buf) as &str)
+                    .and_then(|s| CString::new(s).ok());
 
                 let mut event = translate_key_event(
                     GHOSTTY_ACTION_PRESS,
@@ -490,8 +541,6 @@ pub fn create_terminal(
         });
 
         gl_area.add_controller(key_controller);
-        // Store IM context to keep it alive
-        unsafe { gl_area.set_data("cmux-im-context", im_context) };
     }
 
     // Mouse buttons (also handles click-to-focus)
@@ -591,10 +640,24 @@ pub fn create_terminal(
         gl_area.add_controller(focus_ctrl);
     }
 
-    // Clean up on unrealize
+    // On unrealize: deinit GL resources but keep the surface alive.
+    // GTK unrealizes widgets during reparenting (splits), and we need
+    // the terminal/pty to survive. The GL resources will be recreated
+    // in connect_realize when the widget is re-realized.
     {
         let surface_cell = surface_cell.clone();
-        gl_area.connect_unrealize(move |_| {
+        gl_area.connect_unrealize(move |gl_area| {
+            if let Some(surface) = *surface_cell.borrow() {
+                gl_area.make_current();
+                unsafe { ghostty_surface_display_unrealized(surface) };
+            }
+        });
+    }
+
+    // Clean up only when the widget is actually destroyed.
+    {
+        let surface_cell = surface_cell.clone();
+        overlay.connect_destroy(move |_| {
             if let Some(surface) = surface_cell.borrow_mut().take() {
                 let surface_key = surface as usize;
                 SURFACE_MAP.with(|map| {
@@ -605,7 +668,7 @@ pub fn create_terminal(
         });
     }
 
-    gl_area
+    overlay
 }
 
 // ---------------------------------------------------------------------------
@@ -642,6 +705,69 @@ fn translate_key_event(
         text: ptr::null(),
         unshifted_codepoint: codepoint,
         composing: false,
+    }
+}
+
+/// Show a brief "Copied to clipboard" toast at the bottom of the terminal.
+fn show_clipboard_toast(overlay: &gtk::Overlay) {
+    let toast = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    toast.set_halign(gtk::Align::Center);
+    toast.set_valign(gtk::Align::End);
+    toast.set_margin_bottom(12);
+
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(
+        "box.cmux-toast { \
+            background: rgba(45, 45, 45, 0.95); \
+            color: white; \
+            border-radius: 6px; \
+            padding: 6px 14px; \
+            font-size: 12px; \
+        } \
+        box.cmux-toast label { color: white; } \
+        box.cmux-toast button { \
+            color: rgba(255,255,255,0.5); \
+            border: none; \
+            background: none; \
+            min-height: 0; min-width: 0; \
+            padding: 0 2px; \
+        } \
+        box.cmux-toast button:hover { color: white; }",
+    );
+    gtk::style_context_add_provider_for_display(
+        &gtk::gdk::Display::default().expect("display"),
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+
+    toast.add_css_class("cmux-toast");
+    let label = gtk::Label::new(Some("Copied to clipboard"));
+    let close_btn = gtk::Button::with_label("\u{00D7}"); // ×
+    toast.append(&label);
+    toast.append(&close_btn);
+    toast.set_can_target(false);
+
+    overlay.add_overlay(&toast);
+
+    // Close button dismisses immediately
+    {
+        let t = toast.clone();
+        let o = overlay.clone();
+        close_btn.set_can_target(true);
+        close_btn.connect_clicked(move |_| {
+            o.remove_overlay(&t);
+        });
+    }
+
+    // Auto-dismiss after 2 seconds
+    {
+        let t = toast.clone();
+        let o = overlay.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+            if t.parent().is_some() {
+                o.remove_overlay(&t);
+            }
+        });
     }
 }
 
