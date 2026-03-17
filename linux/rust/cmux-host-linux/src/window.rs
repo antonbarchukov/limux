@@ -390,6 +390,23 @@ fn install_key_capture(window: &adw::ApplicationWindow, state: &State) {
                 cycle_workspace(&state, -1);
                 true
             }
+            // Ctrl+Arrow → focus pane in direction
+            (true, false, gdk::Key::Left) => {
+                focus_pane_in_direction(&state, Direction::Left);
+                true
+            }
+            (true, false, gdk::Key::Right) => {
+                focus_pane_in_direction(&state, Direction::Right);
+                true
+            }
+            (true, false, gdk::Key::Up) => {
+                focus_pane_in_direction(&state, Direction::Up);
+                true
+            }
+            (true, false, gdk::Key::Down) => {
+                focus_pane_in_direction(&state, Direction::Down);
+                true
+            }
             // Ctrl+1-9 → switch to workspace by index
             (true, false, key) => {
                 let digit = match key {
@@ -1127,6 +1144,90 @@ fn add_tab_to_focused_pane(_state: &State, _browser: bool) {
     // TODO: Keyboard-driven tab creation requires finding the pane's internal
     // tab_strip and content_stack from the focused widget. For now, use the
     // toolbar buttons. This will be wired up in a future refactor.
+}
+
+/// Direction for pane navigation.
+enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// Focus the neighboring pane in the given direction by walking the gtk::Paned tree.
+fn focus_pane_in_direction(state: &State, direction: Direction) {
+    let (_ws_id, pane_widget) = match find_focused_pane(state) {
+        Some(v) => v,
+        None => return,
+    };
+
+    // Determine which axis and sides we care about.
+    let (target_orientation, must_be_start) = match direction {
+        Direction::Left  => (gtk::Orientation::Horizontal, false), // must be end_child to go left
+        Direction::Right => (gtk::Orientation::Horizontal, true),  // must be start_child to go right
+        Direction::Up    => (gtk::Orientation::Vertical,   false), // must be end_child to go up
+        Direction::Down  => (gtk::Orientation::Vertical,   true),  // must be start_child to go down
+    };
+
+    // Walk up from the focused pane to find a gtk::Paned with the right
+    // orientation where the current subtree is on the correct side.
+    let mut current: gtk::Widget = pane_widget;
+    loop {
+        let parent = match current.parent() {
+            Some(p) => p,
+            None => return, // reached the top without finding a valid split
+        };
+        if let Some(paned) = parent.downcast_ref::<gtk::Paned>() {
+            if paned.orientation() == target_orientation {
+                let is_start = paned.start_child()
+                    .map(|c| c == current)
+                    .unwrap_or(false);
+                if is_start == must_be_start {
+                    // Found the split point. Navigate to the sibling subtree.
+                    let sibling = if must_be_start {
+                        paned.end_child()
+                    } else {
+                        paned.start_child()
+                    };
+                    if let Some(sibling) = sibling {
+                        // Descend into the sibling to find the nearest leaf pane.
+                        // "Nearest" means the edge closest to where we came from.
+                        let prefer_start = !must_be_start;
+                        let leaf = find_leaf_pane(&sibling, target_orientation, prefer_start);
+                        leaf.grab_focus();
+                    }
+                    return;
+                }
+            }
+        }
+        current = parent;
+    }
+}
+
+/// Descend a pane/split subtree to find a leaf pane widget.
+/// When encountering a gtk::Paned matching `axis`, prefer `start_child` if
+/// `prefer_start` is true (to find the nearest edge). For Paned widgets on
+/// the other axis, prefer start_child (arbitrary but consistent).
+fn find_leaf_pane(widget: &gtk::Widget, axis: gtk::Orientation, prefer_start: bool) -> gtk::Widget {
+    if let Some(paned) = widget.downcast_ref::<gtk::Paned>() {
+        let pick_start = if paned.orientation() == axis {
+            prefer_start
+        } else {
+            true // arbitrary default for orthogonal splits
+        };
+        let child = if pick_start {
+            paned.start_child()
+        } else {
+            paned.end_child()
+        };
+        match child {
+            Some(c) => find_leaf_pane(&c, axis, prefer_start),
+            None => widget.clone(),
+        }
+    } else {
+        // Leaf pane — this is a pane gtk::Box
+        widget.clone()
+    }
 }
 
 fn make_pane_callbacks(state: &State, ws_id: &str) -> Rc<PaneCallbacks> {

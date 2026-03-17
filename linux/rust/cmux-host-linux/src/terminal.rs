@@ -4,27 +4,75 @@ use gtk::gio::Cancellable;
 use vte4::{Pty, PtyFlags, Terminal};
 use vte4::prelude::*;
 
+use std::process::Command;
+use std::sync::OnceLock;
+
+/// Find a monospace font that includes powerline glyphs (U+E0B0).
+/// VTE/Pango doesn't fall back to other fonts for Private Use Area characters,
+/// so we need to use a font that already contains them. Falls back to "Monospace"
+/// if no powerline-capable font is found.
+fn powerline_font_family() -> &'static str {
+    static FONT: OnceLock<String> = OnceLock::new();
+    FONT.get_or_init(|| {
+        // Query fontconfig for monospace fonts (spacing=100) that contain U+E0B0
+        if let Ok(output) = Command::new("fc-list")
+            .args([":charset=e0b0:spacing=100", "family"])
+            .output()
+        {
+            let result = String::from_utf8_lossy(&output.stdout);
+            // Prefer well-known fonts in priority order
+            let preferred = [
+                "Noto Mono for Powerline",
+                "DejaVu Sans Mono for Powerline",
+                "Fira Mono for Powerline",
+                "Source Code Pro for Powerline",
+                "Hack",
+                "Liberation Mono for Powerline",
+                "Meslo LG S for Powerline",
+                "Droid Sans Mono for Powerline",
+                "Roboto Mono for Powerline",
+            ];
+            let available: Vec<&str> = result.lines()
+                .filter_map(|l| {
+                    let family = l.trim().split(',').next()?.trim();
+                    if family.is_empty() { None } else { Some(family) }
+                })
+                .collect();
+
+            for pref in &preferred {
+                if available.iter().any(|a| a.eq_ignore_ascii_case(pref)) {
+                    eprintln!("cmux: using powerline font: {pref}");
+                    return pref.to_string();
+                }
+            }
+            // Use the first available monospace powerline font
+            if let Some(first) = available.first() {
+                eprintln!("cmux: using powerline font: {first}");
+                return first.to_string();
+            }
+        }
+        eprintln!("cmux: no powerline font found, using Monospace (powerline glyphs may not render)");
+        "Monospace".to_string()
+    })
+}
+
 /// Create a new VTE terminal with a shell spawned inside it.
 pub fn create_terminal(working_directory: Option<&str>) -> Terminal {
     let terminal = Terminal::new();
-    terminal.set_scroll_on_output(true);
+    terminal.set_scroll_on_output(false);
     terminal.set_scroll_on_keystroke(true);
     terminal.set_scrollback_lines(10_000);
     terminal.set_hexpand(true);
     terminal.set_vexpand(true);
 
-    // Font — use a Pango font description with fallbacks for powerline/symbols.
-    // Pango resolves the first available family; "Monospace" is the system default.
-    // VTE only uses the first family from FontDescription, so we need to set
-    // fallback fonts via fontconfig attributes instead.
-    let font_desc = gtk::pango::FontDescription::from_string("Monospace 11");
+    // Font — use a powerline-capable monospace font if available.
+    // VTE doesn't fall back to other fonts for Private Use Area glyphs
+    // (unlike Ghostty which draws powerline symbols as vector graphics).
+    let font_family = powerline_font_family();
+    let font_str = format!("{font_family} 11");
+    let font_desc = gtk::pango::FontDescription::from_string(&font_str);
     terminal.set_font(Some(&font_desc));
     terminal.set_bold_is_bright(true);
-    // Enable font fallback so Pango searches other installed fonts for missing glyphs
-    // (e.g. powerline symbols). This is the VTE/Pango equivalent of Ghostty's built-in
-    // powerline rendering.
-    font_desc.set_family("Monospace");
-    terminal.set_font(Some(&font_desc));
 
     // Colors — dark terminal background
     let bg = gtk::gdk::RGBA::new(0.09, 0.09, 0.09, 1.0);
