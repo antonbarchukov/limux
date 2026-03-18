@@ -394,9 +394,8 @@ pub fn build_window(app: &adw::Application) {
     let expand_btn = gtk::Button::with_label("\u{00BB}"); // »
     expand_btn.add_css_class("cmux-sidebar-expand");
     expand_btn.set_tooltip_text(Some("Show sidebar (Ctrl+B)"));
-    expand_btn.set_valign(gtk::Align::Start);
+    expand_btn.set_valign(gtk::Align::Center);
     expand_btn.set_halign(gtk::Align::Start);
-    expand_btn.set_margin_top(40);
     expand_btn.set_visible(false);
 
     let content_overlay = gtk::Overlay::new();
