@@ -114,13 +114,13 @@ const CSS: &str = r#"
     background-color: rgba(25, 25, 25, 1);
 }
 .cmux-sidebar-row-box {
-    padding: 6px 12px;
+    padding: 8px 6px 8px 6px;
     border-radius: 6px;
-    margin: 2px 6px;
+    margin: 2px 3px;
 }
 .cmux-ws-name {
     color: rgba(255, 255, 255, 0.7);
-    font-size: 13px;
+    font-size: 15px;
 }
 row:selected .cmux-ws-name {
     color: white;
@@ -130,8 +130,8 @@ row:selected .cmux-ws-name {
     border: none;
     min-height: 0;
     min-width: 0;
-    padding: 0;
-    font-size: 16px;
+    padding: 0 4px;
+    font-size: 22px;
 }
 .cmux-ws-star-btn:hover {
     color: rgba(255, 255, 255, 0.9);
@@ -220,7 +220,7 @@ row:selected .cmux-ws-star-btn {
 }
 .cmux-ws-path {
     color: rgba(255, 255, 255, 0.3);
-    font-size: 10px;
+    font-size: 12px;
 }
 row:selected .cmux-ws-path {
     color: rgba(255, 255, 255, 0.5);
@@ -639,7 +639,7 @@ fn build_sidebar_row(
     let path_label = gtk::Label::builder()
         .xalign(0.0)
         .ellipsize(gtk::pango::EllipsizeMode::End)
-        .margin_start(16)
+        .margin_start(8)
         .build();
     path_label.add_css_class("cmux-ws-path");
     if let Some(p) = folder_path {
@@ -654,7 +654,7 @@ fn build_sidebar_row(
         .xalign(0.0)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .visible(false)
-        .margin_start(16)
+        .margin_start(8)
         .build();
     notify_label.add_css_class("cmux-notify-msg");
 
