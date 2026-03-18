@@ -387,6 +387,22 @@ fn add_terminal_tab_inner(
                     remove_tab(&ts, &cs, &state, &tid, &cb, &po);
                 });
             }),
+            on_split_right: Box::new({
+                let cb = callbacks.clone();
+                let po = pane_outer.clone();
+                move || {
+                    let w: gtk::Widget = po.clone().upcast();
+                    (cb.on_split)(&w, gtk::Orientation::Horizontal);
+                }
+            }),
+            on_split_down: Box::new({
+                let cb = callbacks.clone();
+                let po = pane_outer.clone();
+                move || {
+                    let w: gtk::Widget = po.clone().upcast();
+                    (cb.on_split)(&w, gtk::Orientation::Vertical);
+                }
+            }),
         }
     };
 

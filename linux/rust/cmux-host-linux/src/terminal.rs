@@ -334,6 +334,8 @@ pub struct TerminalCallbacks {
     pub on_pwd_changed: Box<dyn Fn(&str)>,
     pub on_bell: Box<dyn Fn()>,
     pub on_close: Box<dyn Fn()>,
+    pub on_split_right: Box<dyn Fn()>,
+    pub on_split_down: Box<dyn Fn()>,
 }
 
 /// Create a new Ghostty-powered terminal widget.
@@ -548,7 +550,7 @@ pub fn create_terminal(
         gl_area.add_controller(key_controller);
     }
 
-    // Mouse buttons (also handles click-to-focus)
+    // Mouse buttons (also handles click-to-focus) — skip right-click (handled below)
     {
         let surface_cell = surface_cell.clone();
         let click = gtk::GestureClick::new();
@@ -557,14 +559,18 @@ pub fn create_terminal(
         let gl_for_focus = gl_area.clone();
         let had_focus = had_focus.clone();
         click.connect_pressed(move |gesture, _n, x, y| {
+            let btn = gesture.current_button();
             // Grab keyboard focus on any click
             had_focus.set(true);
             gl_for_focus.grab_focus();
+            // Skip right-click — context menu handles it
+            if btn == 3 {
+                return;
+            }
             if let Some(surface) = *sc.borrow() {
-                let button = match gesture.current_button() {
+                let button = match btn {
                     1 => GHOSTTY_MOUSE_LEFT,
                     2 => GHOSTTY_MOUSE_MIDDLE,
-                    3 => GHOSTTY_MOUSE_RIGHT,
                     _ => GHOSTTY_MOUSE_UNKNOWN,
                 };
                 let mods = translate_mouse_mods(gesture.current_event_state());
@@ -576,11 +582,14 @@ pub fn create_terminal(
         });
         let sc2 = surface_cell.clone();
         click.connect_released(move |gesture, _n, x, y| {
+            let btn = gesture.current_button();
+            if btn == 3 {
+                return;
+            }
             if let Some(surface) = *sc2.borrow() {
-                let button = match gesture.current_button() {
+                let button = match btn {
                     1 => GHOSTTY_MOUSE_LEFT,
                     2 => GHOSTTY_MOUSE_MIDDLE,
-                    3 => GHOSTTY_MOUSE_RIGHT,
                     _ => GHOSTTY_MOUSE_UNKNOWN,
                 };
                 let mods = translate_mouse_mods(gesture.current_event_state());
@@ -591,6 +600,21 @@ pub fn create_terminal(
             }
         });
         gl_area.add_controller(click);
+    }
+
+    // Right-click context menu
+    {
+        let sc = surface_cell.clone();
+        let callbacks = callbacks.clone();
+        let gl = gl_area.clone();
+        let right_click = gtk::GestureClick::new();
+        right_click.set_button(3);
+        right_click.connect_pressed(move |gesture, _n, x, y| {
+            let surface = *sc.borrow();
+            show_terminal_context_menu(&gl, surface, &callbacks, x, y);
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+        });
+        gl_area.add_controller(right_click);
     }
 
     // Mouse motion
@@ -674,6 +698,105 @@ pub fn create_terminal(
     }
 
     overlay
+}
+
+// ---------------------------------------------------------------------------
+// Context menu
+// ---------------------------------------------------------------------------
+
+fn surface_action(surface: Option<ghostty_surface_t>, action: &str) {
+    if let Some(surface) = surface {
+        unsafe {
+            ghostty_surface_binding_action(surface, action.as_ptr() as *const c_char, action.len());
+        }
+    }
+}
+
+fn show_terminal_context_menu(
+    gl_area: &gtk::GLArea,
+    surface: Option<ghostty_surface_t>,
+    callbacks: &Rc<TerminalCallbacks>,
+    x: f64,
+    y: f64,
+) {
+    let menu_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    menu_box.set_margin_top(4);
+    menu_box.set_margin_bottom(4);
+    menu_box.set_margin_start(4);
+    menu_box.set_margin_end(4);
+
+    let has_selection = surface
+        .map(|s| unsafe { ghostty_surface_has_selection(s) })
+        .unwrap_or(false);
+
+    let items: Vec<(&str, bool)> = vec![
+        ("Copy", has_selection),
+        ("Paste", true),
+        ("---", false),
+        ("Split Right", true),
+        ("Split Down", true),
+        ("---", false),
+        ("Clear", true),
+        ("Reset", true),
+    ];
+
+    for (label, enabled) in &items {
+        if *label == "---" {
+            let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
+            sep.set_margin_top(4);
+            sep.set_margin_bottom(4);
+            menu_box.append(&sep);
+            continue;
+        }
+
+        let btn = gtk::Button::with_label(label);
+        btn.add_css_class("flat");
+        btn.set_sensitive(*enabled);
+        btn.set_halign(gtk::Align::Fill);
+        if let Some(lbl) = btn.child().and_then(|c| c.downcast::<gtk::Label>().ok()) {
+            lbl.set_xalign(0.0);
+        }
+        menu_box.append(&btn);
+    }
+
+    let popover = gtk::Popover::new();
+    popover.set_child(Some(&menu_box));
+    popover.set_parent(gl_area);
+    popover.set_has_arrow(false);
+    popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+
+    // Wire up each button
+    let mut child = menu_box.first_child();
+    while let Some(widget) = child {
+        if let Some(btn) = widget.downcast_ref::<gtk::Button>() {
+            let label = btn.label().unwrap_or_default().to_string();
+            let pop = popover.clone();
+            let surface = surface;
+            let cb = callbacks.clone();
+
+            btn.connect_clicked(move |_| {
+                pop.popdown();
+                match label.as_str() {
+                    "Copy" => surface_action(surface, "copy_to_clipboard"),
+                    "Paste" => surface_action(surface, "paste_from_clipboard"),
+                    "Split Right" => (cb.on_split_right)(),
+                    "Split Down" => (cb.on_split_down)(),
+                    "Clear" => surface_action(surface, "clear_screen"),
+                    "Reset" => surface_action(surface, "reset"),
+                    _ => {}
+                }
+            });
+        }
+        child = widget.next_sibling();
+    }
+
+    {
+        popover.connect_closed(move |p| {
+            p.unparent();
+        });
+    }
+
+    popover.popup();
 }
 
 // ---------------------------------------------------------------------------

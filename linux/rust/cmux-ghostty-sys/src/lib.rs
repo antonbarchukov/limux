@@ -390,6 +390,14 @@ extern "C" {
     pub fn ghostty_surface_request_close(surface: ghostty_surface_t);
     pub fn ghostty_surface_set_color_scheme(surface: ghostty_surface_t, scheme: c_int);
 
+    // Binding actions
+    pub fn ghostty_surface_binding_action(
+        surface: ghostty_surface_t,
+        action: *const c_char,
+        action_len: usize,
+    ) -> bool;
+    pub fn ghostty_surface_has_selection(surface: ghostty_surface_t) -> bool;
+
     // Clipboard
     pub fn ghostty_surface_complete_clipboard_request(
         surface: ghostty_surface_t,
