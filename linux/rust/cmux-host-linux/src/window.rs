@@ -1633,8 +1633,13 @@ fn split_focused_pane(state: &State, orientation: gtk::Orientation) {
 
 fn close_focused_tab(state: &State) {
     if let Some((ws_id, pane_widget)) = find_focused_pane(state) {
-        // For now, close the entire pane. Per-tab close via keyboard
-        // will be wired up when pane internals are accessible.
+        let parent = pane_widget.parent();
+        // If this is the only pane (parent is Stack), don't close — keep workspace alive
+        if let Some(ref p) = parent {
+            if p.downcast_ref::<gtk::Stack>().is_some() {
+                return;
+            }
+        }
         remove_pane(state, &ws_id, &pane_widget);
     }
 }
