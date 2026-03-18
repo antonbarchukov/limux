@@ -1696,7 +1696,8 @@ fn focus_pane_in_direction(state: &State, direction: Direction) {
                         // "Nearest" means the edge closest to where we came from.
                         let prefer_start = !must_be_start;
                         let leaf = find_leaf_pane(&sibling, target_orientation, prefer_start);
-                        leaf.grab_focus();
+                        // The leaf is a pane Box — use child_focus to reach the GLArea inside
+                        leaf.child_focus(gtk::DirectionType::TabForward);
                     }
                     return;
                 }
