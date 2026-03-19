@@ -1,4 +1,0 @@
-target/
-zig/.zig-cache/
-zig/zig-out/
-*.tar.gz
