@@ -2,7 +2,7 @@
 
 A GPU-accelerated terminal workspace manager for Linux, powered by Ghostty's rendering engine.
 
-https://github.com/am-will/limux/releases/download/v0.1.0/952_1080x60_shots_so.mp4
+https://github.com/user-attachments/assets/6f3047c2-e2b6-49f2-b536-570a1570d0f8
 
 ## Features
 
