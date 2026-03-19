@@ -4,7 +4,8 @@ set -euo pipefail
 LINUX_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$LINUX_DIR/.." && pwd)"
 
-VERSION="${1:-0.1.0}"
+# Read version from Cargo.toml (single source of truth)
+VERSION="${1:-$(grep '^version' "$LINUX_DIR/rust/cmux-host-linux/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')}"
 ARCH="$(uname -m)"
 PKG_NAME="limux-${VERSION}-linux-${ARCH}"
 BUILD_DIR="/tmp/${PKG_NAME}"

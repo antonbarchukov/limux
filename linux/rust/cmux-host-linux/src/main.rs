@@ -6,6 +6,7 @@ use adw::prelude::*;
 use libadwaita as adw;
 
 const APP_ID: &str = "dev.cmux.linux";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Append a value to an environment variable (comma-separated), or set it.
 fn append_env(key: &str, value: &str) {
@@ -20,6 +21,12 @@ fn append_env(key: &str, value: &str) {
 }
 
 fn main() {
+    // Handle --version flag
+    if std::env::args().any(|a| a == "--version" || a == "-v") {
+        println!("Limux {VERSION}");
+        return;
+    }
+
     // Ghostty requires desktop OpenGL, not GLES. Must disable GLES before
     // GTK initializes, otherwise GDK may select a GLES context.
     // This matches what Ghostty's own GTK apprt does in setGtkEnv().

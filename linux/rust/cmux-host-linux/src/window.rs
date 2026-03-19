@@ -298,15 +298,16 @@ pub fn build_window(app: &adw::Application) {
         }
     }
 
+    let title = format!("Limux v{}", crate::VERSION);
     let window = adw::ApplicationWindow::builder()
         .application(app)
-        .title("Limux")
+        .title(&title)
         .default_width(1400)
         .default_height(900)
         .build();
 
     let header = adw::HeaderBar::new();
-    header.set_title_widget(Some(&gtk::Label::builder().label("Limux").build()));
+    header.set_title_widget(Some(&gtk::Label::builder().label(&title).build()));
 
     let stack = gtk::Stack::new();
     stack.set_transition_type(gtk::StackTransitionType::None);
