@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Read version from Cargo.toml (single source of truth)
-VERSION="${1:-$(grep '^version' "$ROOT_DIR/rust/limux-host-linux/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')}"
+# Read version from workspace Cargo.toml (single source of truth)
+VERSION="${1:-$(grep '^version' "$ROOT_DIR/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')}"
 ARCH="$(uname -m)"
 DEB_ARCH="amd64"
 [ "$ARCH" = "aarch64" ] && DEB_ARCH="arm64"
