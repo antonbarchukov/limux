@@ -95,6 +95,32 @@ fn ghostty_app() -> ghostty_app_t {
     GHOSTTY.get().expect("ghostty not initialized").app
 }
 
+fn ghostty_color_scheme_for_dark_mode(dark: bool) -> c_int {
+    if dark {
+        GHOSTTY_COLOR_SCHEME_DARK
+    } else {
+        GHOSTTY_COLOR_SCHEME_LIGHT
+    }
+}
+
+pub fn sync_color_scheme(dark: bool) {
+    let scheme = ghostty_color_scheme_for_dark_mode(dark);
+    let app = ghostty_app();
+
+    unsafe {
+        ghostty_app_set_color_scheme(app, scheme);
+    }
+
+    SURFACE_MAP.with(|map| {
+        for surface_key in map.borrow().keys() {
+            let surface = *surface_key as ghostty_surface_t;
+            unsafe {
+                ghostty_surface_set_color_scheme(surface, scheme);
+            }
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Runtime callbacks (C ABI)
 // ---------------------------------------------------------------------------
@@ -475,7 +501,6 @@ pub fn create_terminal(
             *surface_cell.borrow_mut() = Some(surface);
 
             unsafe {
-                ghostty_surface_set_color_scheme(surface, GHOSTTY_COLOR_SCHEME_DARK);
                 ghostty_surface_set_focus(surface, true);
             }
 
@@ -961,4 +986,21 @@ fn translate_mouse_mods(state: gtk::gdk::ModifierType) -> c_int {
         mods |= GHOSTTY_MODS_SUPER;
     }
     mods
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_dark_mode_to_ghostty_color_scheme() {
+        assert_eq!(
+            ghostty_color_scheme_for_dark_mode(true),
+            GHOSTTY_COLOR_SCHEME_DARK
+        );
+        assert_eq!(
+            ghostty_color_scheme_for_dark_mode(false),
+            GHOSTTY_COLOR_SCHEME_LIGHT
+        );
+    }
 }

@@ -538,7 +538,11 @@ pub fn build_window(app: &adw::Application) {
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
 
-    adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+    let style_manager = adw::StyleManager::default();
+    crate::terminal::sync_color_scheme(style_manager.is_dark());
+    style_manager.connect_dark_notify(|style_manager| {
+        crate::terminal::sync_color_scheme(style_manager.is_dark());
+    });
 
     // Register custom icons — look for icons dir relative to the executable
     let icon_theme = gtk::IconTheme::for_display(&gtk::gdk::Display::default().expect("display"));
@@ -572,14 +576,12 @@ pub fn build_window(app: &adw::Application) {
         .default_height(900)
         .build();
 
-    // GTK4/libadwaita always uses CSD and ignores the xdg-decoration negotiation.
-    // Skip the header bar when the display provides its own window decorations:
-    // - X11: keep showing the app header bar (downcast to WaylandDisplay fails).
-    // - Wayland: if the compositor advertises xdg-decoration.
+    // On Wayland compositors with xdg-decoration support, the compositor
+    // already provides the window chrome, so keep Limux from rendering a
+    // duplicate header bar. X11 continues to use the in-app header.
     let provides_decorations = gtk::gdk::Display::default()
-        .and_then(|d| d.downcast::<gdk4_wayland::WaylandDisplay>().ok())
-        .map(|d| d.query_registry("zxdg_decoration_manager_v1"))
-        // Not a Wayland display (X11) → default to showing header bar
+        .and_then(|display| display.downcast::<gdk4_wayland::WaylandDisplay>().ok())
+        .map(|display| display.query_registry("zxdg_decoration_manager_v1"))
         .unwrap_or(false);
 
     let header = if provides_decorations {
