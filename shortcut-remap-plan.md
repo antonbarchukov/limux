@@ -78,9 +78,9 @@ T1 ── T2 ── T3 ── T4 ──┬── T5 ── T6
 - **location**: `rust/limux-host-linux/src/window.rs`, `rust/limux-host-linux/src/pane.rs`, focused helper tests where appropriate
 - **description**: Remove hardcoded visible shortcut strings and derive tooltip/label text from the same effective registry used at runtime. This includes sidebar toggle strings in `window.rs` and pane action tooltips currently constructed through `icon_button()` in `pane.rs`. Add regression tests for tooltip rendering and runtime mapping helpers, including the highest-risk behavior: remaps, explicit unbinds, malformed config fallback, duplicate rejection, unknown IDs, normalization round-trips, and proof that old bindings are no longer intercepted once remapped or unbound.
 - **validation**: Tooltips and labels reflect remapped shortcuts, unbound actions omit shortcut suffixes, and tests fail if a hardcoded host shortcut hint or stale binding path is reintroduced.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Verified that the current branch already loads the effective shortcut registry once in `rust/limux-host-linux/src/main.rs`, applies GTK accelerators from `gtk_accel_entries()`, and passes the resolved registry into `build_window(...)`. Verified that `rust/limux-host-linux/src/window.rs` already registers all shortcut actions from the canonical definitions and routes capture-phase key events through the registry instead of the old hardcoded `match`. Added the missing helper `shortcut_command_from_key_event(...)` and RED->GREEN tests that prove default bindings resolve, remapped bindings disable the old combo, and explicit unbinds stop interception. RED command: `cargo test -p limux-host-linux shortcut_command_from_key_event -- --nocapture` failed first because the helper did not exist. GREEN commands: `cargo test -p limux-host-linux shortcut_command_from_key_event -- --nocapture`, `cargo test -p limux-host-linux`, and `cargo build -p limux-host-linux --features webkit` all passed after wiring the helper and tests.
+- **files edited/created**: `rust/limux-host-linux/src/window.rs`, `shortcut-remap-plan.md`
 
 ## Parallel Execution Groups
 

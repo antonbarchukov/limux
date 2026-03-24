@@ -863,12 +863,10 @@ fn install_key_capture(window: &adw::ApplicationWindow, state: &State) {
 
     let state = state.clone();
     key_controller.connect_key_pressed(move |_, keyval, _keycode, modifier| {
-        let matched = shortcut_config::NormalizedShortcut::from_gdk_key(keyval, modifier)
-            .map(|shortcut| shortcut.to_runtime_combo())
-            .and_then(|combo| {
-                let s = state.borrow();
-                s.shortcuts.command_for_runtime_combo(&combo)
-            })
+        let matched = {
+            let s = state.borrow();
+            shortcut_command_from_key_event(&s.shortcuts, keyval, modifier)
+        }
             .map(|command| {
                 dispatch_shortcut_command(&state, command);
                 true
@@ -883,6 +881,16 @@ fn install_key_capture(window: &adw::ApplicationWindow, state: &State) {
     });
 
     window.add_controller(key_controller);
+}
+
+fn shortcut_command_from_key_event(
+    shortcuts: &ResolvedShortcutConfig,
+    keyval: gtk::gdk::Key,
+    modifier: gtk::gdk::ModifierType,
+) -> Option<ShortcutCommand> {
+    shortcut_config::NormalizedShortcut::from_gdk_key(keyval, modifier)
+        .map(|shortcut| shortcut.to_runtime_combo())
+        .and_then(|combo| shortcuts.command_for_runtime_combo(&combo))
 }
 
 fn dispatch_shortcut_command(state: &State, command: ShortcutCommand) {
@@ -2210,7 +2218,12 @@ fn mark_workspace_unread(state: &State, ws_id: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{clamp_workspace_insert_index_for_pinning, favorites_prefix_len};
+    use super::{
+        clamp_workspace_insert_index_for_pinning, favorites_prefix_len,
+        shortcut_command_from_key_event,
+    };
+    use crate::shortcut_config::{default_shortcuts, resolve_shortcuts_from_str, ShortcutCommand};
+    use super::gtk::gdk;
 
     #[test]
     fn favorites_prefix_len_counts_only_leading_favorites() {
@@ -2235,5 +2248,77 @@ mod tests {
         let clamped =
             clamp_workspace_insert_index_for_pinning(&after_removal, true, after_removal.len());
         assert_eq!(clamped, 2);
+    }
+
+    #[test]
+    fn shortcut_command_from_key_event_uses_default_registry_bindings() {
+        let shortcuts = default_shortcuts();
+
+        assert_eq!(
+            shortcut_command_from_key_event(
+                &shortcuts,
+                gdk::Key::T,
+                gdk::ModifierType::CONTROL_MASK
+            ),
+            Some(ShortcutCommand::NewTerminal)
+        );
+        assert_eq!(
+            shortcut_command_from_key_event(
+                &shortcuts,
+                gdk::Key::Page_Down,
+                gdk::ModifierType::CONTROL_MASK
+            ),
+            Some(ShortcutCommand::NextWorkspace)
+        );
+    }
+
+    #[test]
+    fn shortcut_command_from_key_event_honors_remaps_and_disables_old_binding() {
+        let shortcuts = resolve_shortcuts_from_str(
+            r#"{
+                "shortcuts": {
+                    "toggle_sidebar": "<Ctrl><Alt>b"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            shortcut_command_from_key_event(
+                &shortcuts,
+                gdk::Key::B,
+                gdk::ModifierType::CONTROL_MASK
+            ),
+            None
+        );
+        assert_eq!(
+            shortcut_command_from_key_event(
+                &shortcuts,
+                gdk::Key::B,
+                gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK
+            ),
+            Some(ShortcutCommand::ToggleSidebar)
+        );
+    }
+
+    #[test]
+    fn shortcut_command_from_key_event_respects_explicit_unbinds() {
+        let shortcuts = resolve_shortcuts_from_str(
+            r#"{
+                "shortcuts": {
+                    "toggle_sidebar": null
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            shortcut_command_from_key_event(
+                &shortcuts,
+                gdk::Key::B,
+                gdk::ModifierType::CONTROL_MASK
+            ),
+            None
+        );
     }
 }
