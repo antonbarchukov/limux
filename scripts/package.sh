@@ -88,10 +88,21 @@ echo "=== Limux Packager ==="
 echo "Version: ${VERSION}"
 echo "Arch:    ${ARCH}"
 
-# Verify libghostty.so exists
+# Verify libghostty.so exists and is a release build.
+# A Debug build of libghostty causes ~7x slower terminal IO throughput
+# compared to native Ghostty, because Zig's Debug mode disables all
+# optimizations and adds safety checks on every memory operation.
 if [ ! -f "$GHOSTTY_SO" ]; then
     echo "ERROR: libghostty.so not found at ${GHOSTTY_SO}"
     echo "Build it first: cd ghostty && zig build -Dapp-runtime=none -Doptimize=ReleaseFast"
+    exit 1
+fi
+
+GHOSTTY_SO_SIZE=$(stat -c%s "$GHOSTTY_SO")
+if [ "$GHOSTTY_SO_SIZE" -gt 50000000 ]; then
+    echo "ERROR: libghostty.so is $(( GHOSTTY_SO_SIZE / 1048576 ))MB, likely a Debug build."
+    echo "A ReleaseFast build should be ~30MB. Rebuild with:"
+    echo "  cd ghostty && zig build -Dapp-runtime=none -Doptimize=ReleaseFast"
     exit 1
 fi
 
