@@ -7,7 +7,7 @@ arch=('x86_64')
 url="https://github.com/am-will/limux"
 license=('MIT')
 depends=('gtk4' 'libadwaita' 'webkitgtk-6.0')
-makedepends=('zig' 'cargo' 'git')
+makedepends=('zig' 'cargo' 'git' 'ghostty')
 conflicts=('limux-bin')
 source=("$pkgname-$pkgver::git+https://github.com/am-will/limux.git#tag=v$pkgver")
 sha256sums=('SKIP')
@@ -46,15 +46,12 @@ package() {
     install -dm755 "$pkgdir/usr/share/icons/hicolor/scalable/actions"
     install -Dm644 rust/limux-host-linux/icons/*.svg -t "$pkgdir/usr/share/icons/hicolor/scalable/actions/"
 
-    # Ghostty resources (themes, shell integration)
+    # Ghostty resources (themes, shell integration) from system ghostty package
     install -dm755 "$pkgdir/usr/share/limux"
-    cp -r ghostty/zig-out/share/ghostty "$pkgdir/usr/share/limux/ghostty"
+    cp -r /usr/share/ghostty "$pkgdir/usr/share/limux/ghostty"
 
-    # Terminfo entries
-    local terminfo_src="ghostty/zig-out/share/terminfo"
-    if [ -d "$terminfo_src" ]; then
-        install -dm755 "$pkgdir/usr/share/limux/terminfo/g" "$pkgdir/usr/share/limux/terminfo/x"
-        [ -f "$terminfo_src/g/ghostty" ] && install -Dm644 "$terminfo_src/g/ghostty" "$pkgdir/usr/share/limux/terminfo/g/ghostty"
-        [ -f "$terminfo_src/x/xterm-ghostty" ] && install -Dm644 "$terminfo_src/x/xterm-ghostty" "$pkgdir/usr/share/limux/terminfo/x/xterm-ghostty"
-    fi
+    # Terminfo entries from system ghostty-terminfo package
+    install -dm755 "$pkgdir/usr/share/limux/terminfo/g" "$pkgdir/usr/share/limux/terminfo/x"
+    [ -f /usr/share/terminfo/g/ghostty ] && install -Dm644 /usr/share/terminfo/g/ghostty "$pkgdir/usr/share/limux/terminfo/g/ghostty"
+    [ -f /usr/share/terminfo/x/xterm-ghostty ] && install -Dm644 /usr/share/terminfo/x/xterm-ghostty "$pkgdir/usr/share/limux/terminfo/x/xterm-ghostty"
 }

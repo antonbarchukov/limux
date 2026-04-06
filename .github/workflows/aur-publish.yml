@@ -9,13 +9,36 @@ on:
         description: "Version to publish (without v prefix)"
         required: true
 
+# Only run on upstream — secrets are not available on forks
+run-name: "Publish ${{ inputs.version || github.ref_name }} to AUR"
+
 permissions:
   contents: read
 
 jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+
+    steps:
+      - name: Resolve version
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
   validate-src:
+    needs: resolve-version
     runs-on: ubuntu-latest
     container: archlinux:base-devel
+
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
 
     steps:
       - name: Check out repository
@@ -23,117 +46,71 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Extract version
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Install build dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm zig rust git gtk4 libadwaita webkit2gtk-6.0
+          pacman -S --noconfirm zig rust git gtk4 libadwaita webkitgtk-6.0 ghostty
 
-      - name: Generate and validate source PKGBUILD
+      - name: Validate PKGBUILD template
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           sed "s/@@VERSION@@/$VERSION/" PKGBUILD-source.template > /tmp/PKGBUILD
-
-          # Validate PKGBUILD syntax
           source /tmp/PKGBUILD
           echo "PKGBUILD parsed OK: $pkgname $pkgver"
 
-      - name: Test build
+      - name: Build
         run: |
-          # Build libghostty
-          cd ghostty && zig build -Dapp-runtime=none -Doptimize=ReleaseFast
-          cd ..
-
-          # Build limux
+          cd ghostty && zig build -Dapp-runtime=none -Doptimize=ReleaseFast && cd ..
           cargo build --release
 
-          # Verify expected outputs exist
-          test -f target/release/limux || { echo "ERROR: binary not found"; exit 1; }
-          test -f ghostty/zig-out/lib/libghostty.so || { echo "ERROR: libghostty.so not found"; exit 1; }
-          test -d ghostty/zig-out/share/ghostty || { echo "ERROR: ghostty resources not found"; exit 1; }
-          echo "Build validation passed"
+      - name: Verify build outputs
+        run: |
+          test -f target/release/limux
+          test -f ghostty/zig-out/lib/libghostty.so
+          test -d /usr/share/ghostty
 
   validate-bin:
+    needs: resolve-version
     runs-on: ubuntu-latest
 
+    outputs:
+      sha256: ${{ steps.validate.outputs.sha256 }}
+
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-
-      - name: Extract version
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Download and validate tarball
+        id: validate
         run: |
           set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
           TARBALL_URL="https://github.com/am-will/limux/releases/download/v${VERSION}/limux-${VERSION}-linux-x86_64.tar.gz"
+          curl -fL --retry 5 --retry-delay 10 "$TARBALL_URL" -o /tmp/limux.tar.gz
 
-          for i in 1 2 3 4 5; do
-            curl -fL "$TARBALL_URL" -o /tmp/limux.tar.gz && break
-            echo "Attempt $i failed, retrying in 30s..."
-            sleep 30
-          done
-
-          # Extract and verify expected files
           cd /tmp && tar xzf limux.tar.gz
           DIR="limux-${VERSION}-linux-x86_64"
-          test -f "$DIR/limux" || { echo "ERROR: binary not in tarball"; exit 1; }
-          test -f "$DIR/lib/libghostty.so" || { echo "ERROR: libghostty.so not in tarball"; exit 1; }
-          test -f "$DIR/share/applications/dev.limux.linux.desktop" || { echo "ERROR: desktop file not in tarball"; exit 1; }
-          test -d "$DIR/share/limux/ghostty" || { echo "ERROR: ghostty resources not in tarball"; exit 1; }
-          echo "Tarball validation passed"
+          test -f "$DIR/limux"
+          test -f "$DIR/lib/libghostty.so"
+          test -f "$DIR/share/applications/dev.limux.linux.desktop"
+          test -d "$DIR/share/limux/ghostty"
 
-          # Store SHA for publish job
-          SHA256=$(sha256sum /tmp/limux.tar.gz | awk '{print $1}')
-          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum /tmp/limux.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
-  aur-bin:
-    needs: validate-bin
+  publish-bin:
+    if: github.repository == 'am-will/limux'
+    needs: [resolve-version, validate-bin]
     runs-on: ubuntu-latest
+
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Extract version
-        id: version
+      - name: Generate PKGBUILD
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Generate AUR PKGBUILD
-        run: |
-          set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
-          TARBALL_URL="https://github.com/am-will/limux/releases/download/v${VERSION}/limux-${VERSION}-linux-x86_64.tar.gz"
-
-          for i in 1 2 3 4 5; do
-            curl -fL "$TARBALL_URL" -o /tmp/limux.tar.gz && break
-            echo "Attempt $i failed, retrying in 30s..."
-            sleep 30
-          done
-          SHA256=$(sha256sum /tmp/limux.tar.gz | awk '{print $1}')
-
           sed -e "s/@@VERSION@@/$VERSION/" \
-              -e "s/@@SHA256@@/$SHA256/" \
+              -e "s/@@SHA256@@/${{ needs.validate-bin.outputs.sha256 }}/" \
               PKGBUILD.template > PKGBUILD
 
       - name: Publish limux-bin to AUR
@@ -144,29 +121,23 @@ jobs:
           commit_username: "limux-aurbot"
           commit_email: limux-aurbot@users.noreply.aur.archlinux.org
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "chore: bump to ${{ steps.version.outputs.version }}"
+          commit_message: "Update to ${{ env.VERSION }}"
           force_push: true
 
-  aur-src:
-    needs: validate-src
+  publish-src:
+    if: github.repository == 'am-will/limux'
+    needs: [resolve-version, validate-src]
     runs-on: ubuntu-latest
+
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Extract version
-        id: version
+      - name: Generate PKGBUILD
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Generate AUR PKGBUILD
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
           sed "s/@@VERSION@@/$VERSION/" PKGBUILD-source.template > PKGBUILD
 
       - name: Publish limux to AUR
@@ -177,5 +148,5 @@ jobs:
           commit_username: "limux-aurbot"
           commit_email: limux-aurbot@users.noreply.aur.archlinux.org
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "chore: bump to ${{ steps.version.outputs.version }}"
+          commit_message: "Update to ${{ env.VERSION }}"
           force_push: true
